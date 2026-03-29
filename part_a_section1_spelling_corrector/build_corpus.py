@@ -22,7 +22,19 @@ import json
 import re
 import os
 import time
+import socket
+import logging
 from collections import Counter
+
+# ── Logging & Resource Limits
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.WARNING)
+MAX_TEXT_LENGTH = 100000
+MAX_RESPONSE_SIZE = 1048576
+_LATEX_REGEX = re.compile(r'\\[a-z]+\{[^}]*?\}', re.DOTALL)
+_MATH_REGEX = re.compile(r'\$[^$]*?\$', re.DOTALL)
+_URL_REGEX = re.compile(r'https?://\S+')
+_SPECIAL_REGEX = re.compile(r'[^a-z\s\'-]')
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -51,7 +63,7 @@ SEARCH_QUERIES = [
 ]
 
 PAPERS_PER_QUERY = 15       # papers fetched per query
-MAX_TOTAL_PAPERS = 200      # hard cap
+MAX_TOTAL_PAPERS = 800      # hard cap
 TARGET_WORDS    = 120_000   # stop early if we exceed this
 OUTPUT_FILE     = "corpus.json"
 DELAY_SECONDS   = 1.5       # polite delay between API calls
@@ -78,9 +90,14 @@ def fetch_papers(query: str, max_results: int = 15) -> list[dict]:
     url = f"{ARXIV_API}?{params}"
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
-            xml_data = resp.read().decode("utf-8")
+            xml_data = resp.read(MAX_RESPONSE_SIZE).decode("utf-8")
+            if len(xml_data) == MAX_RESPONSE_SIZE:
+                logger.warning(f"Response truncated at limit for: {query}")
+    except (socket.timeout, urllib.error.URLError) as e:
+        logger.error(f"Network error fetching '{query}': {e}")
+        return []
     except Exception as e:
-        print(f"    ⚠ Network error: {e}")
+        logger.error(f"Unexpected error: {e}")
         return []
 
     try:
@@ -117,16 +134,15 @@ def fetch_papers(query: str, max_results: int = 15) -> list[dict]:
 # ── Text Cleaning ──────────────────────────────────────────────────────────────
 
 def clean_text(text: str) -> str:
-    """Normalise and clean raw abstract text."""
+    """Normalise and clean raw abstract text with bounded operations."""
+    if len(text) > MAX_TEXT_LENGTH:
+        text = text[:MAX_TEXT_LENGTH]
     text = text.lower()
-    # Remove LaTeX commands
-    text = re.sub(r"\\[a-z]+\{[^}]*\}", " ", text)
-    text = re.sub(r"\$[^$]*\$", " ", text)
-    # Remove URLs
-    text = re.sub(r"https?://\S+", " ", text)
-    # Remove non-alpha except spaces
-    text = re.sub(r"[^a-z\s'-]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = _LATEX_REGEX.sub(" ", text)
+    text = _MATH_REGEX.sub(" ", text)
+    text = _URL_REGEX.sub(" ", text)
+    text = _SPECIAL_REGEX.sub(" ", text)
+    text = " ".join(text.split())
     return text
 
 
@@ -207,6 +223,17 @@ def build_corpus():
     print(f"\n  Top 20 words   : {[w for w,_ in top30[:20]]}")
 
     # ── Serialise ──
+    # Validate papers before writing
+    def validate_paper(p: dict) -> bool:
+        return (isinstance(p.get("id"), str) and
+                isinstance(p.get("abstract"), str) and
+                isinstance(p.get("title"), str) and
+                0 < len(p.get("abstract", "")) <= 5000)
+    
+    valid_papers = [p for p in all_papers if validate_paper(p)]
+    if not valid_papers:
+        raise ValueError(f"All {len(all_papers)} papers invalid")
+    
     # Convert Counter keys (tuples) to strings for JSON
     bigram_dict = {f"{w1}|{w2}": count for (w1, w2), count in bigrams.items()}
 
@@ -215,7 +242,7 @@ def build_corpus():
             "total_tokens":  len(all_tokens),
             "unique_words":  len(vocabulary),
             "total_bigrams": len(bigram_dict),
-            "total_papers":  len(all_papers),
+            "total_papers":  len(valid_papers),
             "queries_used":  SEARCH_QUERIES,
         },
         "word_freq":  dict(word_freq),
@@ -224,7 +251,7 @@ def build_corpus():
         "tokens":     all_tokens,
         "papers": [
             {"id": p["id"], "title": p["title"], "abstract": p["abstract"][:300]}
-            for p in all_papers
+            for p in valid_papers
         ],
     }
 

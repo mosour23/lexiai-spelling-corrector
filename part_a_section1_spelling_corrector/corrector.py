@@ -28,6 +28,8 @@ class MinEditDistance:
     Computes minimum edit distance (Levenshtein) between two strings.
     Supports weighted operations: insert, delete, substitute, transpose.
     """
+    
+    MAX_MED_LENGTH = 1000
 
     def __init__(self, ins_cost=1, del_cost=1, sub_cost=2, trans_cost=1):
         self.ins_cost = ins_cost
@@ -36,7 +38,9 @@ class MinEditDistance:
         self.trans_cost = trans_cost
 
     def distance(self, source: str, target: str) -> int:
-        """Compute weighted edit distance with alignment matrix."""
+        """Compute weighted edit distance with allocation bounds."""
+        if len(source) > self.MAX_MED_LENGTH or len(target) > self.MAX_MED_LENGTH:
+            return abs(len(source) - len(target))
         n, m = len(source), len(target)
         # Initialize DP matrix
         dp = [[0] * (m + 1) for _ in range(n + 1)]
@@ -167,33 +171,64 @@ class CandidateGenerator:
         self.alphabet = 'abcdefghijklmnopqrstuvwxyz'
 
     def edits1(self, word: str) -> set:
-        """Generate all strings one edit away."""
+        """Generate all strings one edit away, filtered by vocabulary."""
         splits = [(word[:i], word[i:]) for i in range(len(word) + 1)]
+        # Step 1: Generate raw candidates
         deletes = {L + R[1:] for L, R in splits if R}
         transposes = {L + R[1] + R[0] + R[2:] for L, R in splits if len(R) > 1}
         replaces = {L + c + R[1:] for L, R in splits if R for c in self.alphabet}
         inserts = {L + c + R for L, R in splits for c in self.alphabet}
-        # Keyboard-proximity substitutions (lower cost)
         kb_replaces = set()
         for L, R in splits:
             if R:
                 neighbors = KEYBOARD_NEIGHBORS.get(R[0], '')
                 kb_replaces.update({L + c + R[1:] for c in neighbors})
-        return (deletes | transposes | replaces | inserts | kb_replaces) & self.vocab
+        
+        # Step 2: Filter by vocabulary - ONLY keep words in vocab
+        raw_candidates = deletes | transposes | replaces | inserts | kb_replaces
+        valid_candidates = raw_candidates & self.vocab
+        
+        # Step 3: Explicitly remove the original misspelled word
+        valid_candidates.discard(word)
+        
+        return valid_candidates
 
     def edits2(self, word: str) -> set:
-        """Generate all strings two edits away (subset in vocab only)."""
-        return {e2 for e1 in self.edits1(word) for e2 in self.edits1(e1)} & self.vocab
+        """Generate bounded set of edit-2 candidates, filtered by vocabulary."""
+        MAX_EDIT_2 = 500
+        e1 = self.edits1(word)
+        if not e1:
+            return set()
+        
+        # Step 1: Generate raw edit-2 candidates by applying edits1 to edit-1 words
+        raw_candidates = set()
+        for e1_word in sorted(e1):
+            if len(raw_candidates) >= MAX_EDIT_2:
+                break
+            for e2_word in self.edits1(e1_word):
+                raw_candidates.add(e2_word)
+                if len(raw_candidates) >= MAX_EDIT_2:
+                    break
+        
+        # Step 2: Filter by vocabulary - ONLY keep words in vocab
+        valid_candidates = raw_candidates & self.vocab
+        
+        # Step 3: Explicitly remove the original misspelled word
+        valid_candidates.discard(word)
+        
+        return valid_candidates
 
     def candidates(self, word: str) -> set:
-        """Return candidates: prefer edit-1, fallback to edit-2."""
+        """Return candidates: prefer edit-1, fallback to edit-2.
+        Both sets are already filtered by vocabulary and have original word removed.
+        """
         e1 = self.edits1(word)
         if e1:
             return e1
         e2 = self.edits2(word)
         if e2:
             return e2
-        return {word}  # Return original if no candidates found
+        return set()  # Return empty set if no valid candidates available
 
 
 class SpellChecker:
@@ -202,6 +237,8 @@ class SpellChecker:
     Detects non-word errors and real-word errors.
     Ranks candidates using MED + bigram probability.
     """
+    
+    MAX_INPUT_LENGTH = 50000
 
     def __init__(self, corpus_builder):
         self.corpus = corpus_builder
@@ -230,35 +267,73 @@ class SpellChecker:
                         prev_word: str = None, next_word: str = None,
                         top_n: int = 5) -> list:
         """
-        Rank candidates by combined score:
-          score = -α * MED(word, candidate) + β * log P(candidate | context)
+        Rank candidates following explicit flow:
+        1. Filter candidates: ONLY keep valid vocabulary words
+        2. Explicitly remove original misspelled word (defense-in-depth)
+        3. Sort by (edit_distance, -frequency/probability)
+        4. Return formatted list
+        
+        PRIMARY sort key: Edit Distance (lower is better)
+        SECONDARY sort key: Probability (higher is better, for tie-breaking only)
         """
         word_lower = word.lower()
+        
+        # Step 1-2: Create valid candidate set, ensuring original word excluded
+        valid_candidates = set(candidates)  # Copy input set
+        valid_candidates.discard(word_lower)  # Explicit removal
+        
+        if not valid_candidates:
+            # No valid candidates available
+            return []
+        
+        # Step 3: Score and sort candidates
         scored = []
-        for cand in candidates:
+        for cand in valid_candidates:
+            # PRIMARY: Minimum Edit Distance (strict primary sort key)
             med_score = self.med.distance(word_lower, cand)
-            # Bigram context score
-            ctx_log_prob = math.log(self.lm.unigram_prob(cand))
+            
+            # SECONDARY: Compute probability for tie-breaking only
+            # Get unigram probability
+            unigram_prob = self.lm.unigram_prob(cand)
+            ctx_log_prob = math.log(unigram_prob)
+            
+            # Add context bigram probabilities if available
             if prev_word:
                 ctx_log_prob += math.log(self.lm.bigram_prob(prev_word.lower(), cand))
             if next_word:
                 ctx_log_prob += math.log(self.lm.bigram_prob(cand, next_word.lower()))
-            # Combined score (lower MED + higher LM prob = better)
-            combined = -1.5 * med_score + 0.8 * ctx_log_prob
+            
+            # Convert log probability to probability for sorting
+            num_context_words = int(bool(prev_word)) + int(bool(next_word)) + 1
+            lm_prob = math.exp(ctx_log_prob / max(1, num_context_words))
+            
             scored.append({
                 'word': cand,
                 'med': med_score,
-                'lm_prob': math.exp(ctx_log_prob / max(1, int(bool(prev_word)) + int(bool(next_word)) + 1)),
-                'score': combined
+                'lm_prob': lm_prob,
+                'score': (med_score, -lm_prob)  # Tuple: (primary, secondary)
             })
-        scored.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Sort by tuple: (edit_distance, -probability)
+        # Python compares tuples element-wise: first by edit_distance (ascending),
+        # then by -probability (ascending, which means highest probability wins)
+        scored.sort(key=lambda x: x['score'])
+        
+        # Step 4: Return formatted list
         return scored[:top_n]
 
     def check(self, text: str) -> dict:
         """
-        Full spell-check pipeline.
+        Full spell-check pipeline with input validation.
         Returns list of errors with positions and ranked suggestions.
         """
+        if not isinstance(text, str):
+            raise TypeError("Input must be string")
+        if len(text) > self.MAX_INPUT_LENGTH:
+            raise ValueError(f"Input exceeds {self.MAX_INPUT_LENGTH} chars")
+        if not text.strip():
+            return {'original': text, 'tokens': [], 'errors': [], 'error_count': 0}
+        
         tokens = self.tokenize_input(text)
         word_tokens = [t for t in tokens if t['is_word']]
         errors = []

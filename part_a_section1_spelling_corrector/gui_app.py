@@ -49,6 +49,10 @@ class LexiAIApp(tk.Tk):
         self.selected_err_idx = -1
         self.corpus = None
         self.checker = None
+        
+        # Thread synchronization for async corpus loading
+        self._corpus_ready = threading.Event()
+        self._corpus_lock = threading.Lock()
 
         self._build_ui()
         self._load_corpus_async()
@@ -497,11 +501,19 @@ class LexiAIApp(tk.Tk):
 
     # ── Corpus Loading ────────────────────────────────────────────────────────
     def _load_corpus_async(self):
+        """Load corpus asynchronously with proper synchronization."""
         def load():
-            self.corpus = CorpusBuilder().build()
-            self.checker = SpellChecker(self.corpus)
-            stats = self.corpus.get_stats()
-            self.after(0, self._on_corpus_loaded, stats)
+            try:
+                with self._corpus_lock:
+                    self.corpus = CorpusBuilder().build()
+                    self.checker = SpellChecker(self.corpus)
+                stats = self.corpus.get_stats()
+                self._corpus_ready.set()
+                self.after(0, self._on_corpus_loaded, stats)
+            except Exception as e:
+                import logging
+                logging.error(f"Corpus load failed: {e}")
+                self.after(0, lambda: messagebox.showerror("Load Error", str(e)))
 
         threading.Thread(target=load, daemon=True).start()
 
@@ -538,9 +550,13 @@ class LexiAIApp(tk.Tk):
             fg=ACCENT3 if n > 490 else WARN if n > 400 else MUTED)
 
     def _run_check(self):
-        if not self.checker:
+        if not self._corpus_ready.wait(timeout=0.5):
             messagebox.showinfo("LexiAI", "Corpus is still loading, please wait…")
             return
+        with self._corpus_lock:
+            if not self.checker:
+                messagebox.showerror("Error", "Corpus failed to load")
+                return
         text = self.input_text.get("1.0", "end-1c").strip()
         if not text:
             messagebox.showinfo("LexiAI", "Please enter some text to check.")
@@ -549,16 +565,32 @@ class LexiAIApp(tk.Tk):
             text = text[:500]
 
         self.check_btn.config(text="⏳ Checking…", state="disabled")
-        self.after(50, lambda: self._do_check(text))
+        
+        # Run spell check in background thread to prevent UI freezing
+        check_thread = threading.Thread(target=self._do_check_async, args=(text,), daemon=True)
+        check_thread.start()
 
-    def _do_check(self, text):
-        result = self.checker.check(text)
+    def _do_check_async(self, text):
+        """Run spell check in background thread to avoid blocking UI."""
+        try:
+            result = self.checker.check(text)
+            # Schedule UI update on main thread using after()
+            self.after(0, self._on_check_complete, result)
+        except Exception as e:
+            import logging
+            logging.error(f"Spell check failed: {e}")
+            self.after(0, lambda: messagebox.showerror("Check Error", f"Failed: {str(e)}"))
+        finally:
+            # Always reset button, even if error occurs
+            self.after(0, lambda: self.check_btn.config(text="▶  Check Spelling", state="normal"))
+
+    def _on_check_complete(self, result):
+        """Handle spell check completion on main thread."""
         self.current_errors = result['errors']
         self.selected_err_idx = -1
         self._render_result(result)
         self._render_err_panel(result['errors'])
-        self._render_stats(result['errors'], text)
-        self.check_btn.config(text="▶  Check Spelling", state="normal")
+        self._render_stats(result['errors'], result['original'])
 
     def _render_result(self, result):
         box = self.result_box
@@ -666,7 +698,7 @@ class LexiAIApp(tk.Tk):
                        bg=SURFACE2, fg=ACCENT, padx=8, pady=4, anchor="w")
         lbl.pack(side="left", fill="x", expand=True)
 
-        meta = tk.Label(row, text=f"MED:{sug['med']}  p:{sug['lmProb']:.1e}",
+        meta = tk.Label(row, text=f"MED:{sug['med']}  p:{sug['lm_prob']:.1e}",
                         font=("Courier", 8), bg=SURFACE2, fg=MUTED, padx=8)
         meta.pack(side="right")
 

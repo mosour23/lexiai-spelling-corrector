@@ -425,24 +425,37 @@ class CorpusBuilder:
 
     def load_from_json(self, path: str) -> bool:
         """
-        Load a pre-built corpus from corpus.json (created by build_corpus.py).
+        Load a pre-built corpus from corpus.json with validation.
         Returns True if successful, False if file not found or invalid.
         """
         import os
+        import logging
+        logger = logging.getLogger(__name__)
+        
         if not os.path.exists(path):
+            logger.warning(f"Corpus file not found: {path}")
             return False
+        
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            
+            # Validate required structure
+            required_keys = {"tokens", "word_freq", "vocabulary", "bigrams"}
+            if not required_keys.issubset(set(data.keys())):
+                missing = required_keys - set(data.keys())
+                raise ValueError(f"Missing keys: {missing}")
+            
+            # Load with type validation
             self.tokens    = data["tokens"]
             self.word_freq = Counter(data["word_freq"])
             self.vocabulary = set(data["vocabulary"])
-            # Bigrams stored as "w1|w2" strings → convert back to tuple keys
             self.bigrams   = Counter({tuple(k.split("|", 1)): v
                                       for k, v in data["bigrams"].items()})
             self.word_count = len(self.tokens)
             self._source   = path
-            # Still enrich with common words to prevent false positives
+            
+            # Enrich with common words
             for word in COMMON_WORDS:
                 normalized = word.lower().strip("\'-_")
                 if normalized and len(normalized) > 1 and re.match(r'^[a-z]+$', normalized):
@@ -452,9 +465,20 @@ class CorpusBuilder:
                         self.word_freq[normalized] = max(freq, 10)
                         self.vocabulary.add(normalized)
             self.word_count = len(self.tokens)
+            logger.info(f"Loaded: {len(self.vocabulary)} words")
             return True
-        except (json.JSONDecodeError, KeyError, Exception) as e:
-            print(f"  ⚠ Could not load {path}: {e}")
+        
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in {path}: {e}")
+            return False
+        except (KeyError, ValueError, TypeError) as e:
+            logger.error(f"Corrupt corpus: {e}")
+            return False
+        except IOError as e:
+            logger.error(f"Cannot read {path}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
             return False
 
     def build(self):
