@@ -38,7 +38,27 @@ That's it. No pip install needed.
 
 ## How to Run
 
-### Windows
+### Setup Virtual Enrivonment
+
+```
+py -m venv venv
+```
+
+```
+venv/Scripts/Activate
+```
+
+### Build the corpus
+
+```
+cd part_a_section1_spelling_corrector
+```
+
+```
+python .\build_corpus.py
+```
+
+### Run the code (Windows)
 Double-click `gui_app.py`, or open a terminal and run:
 ```
 python gui_app.py
