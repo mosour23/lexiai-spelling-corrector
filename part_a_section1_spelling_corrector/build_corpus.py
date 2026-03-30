@@ -17,6 +17,7 @@ Requirements: Python 3.8+ (uses only standard library)
 
 import urllib.request
 import urllib.parse
+import urllib.error
 import xml.etree.ElementTree as ET
 import json
 import re
@@ -66,16 +67,35 @@ PAPERS_PER_QUERY = 15       # papers fetched per query
 MAX_TOTAL_PAPERS = 800      # hard cap
 TARGET_WORDS    = 120_000   # stop early if we exceed this
 OUTPUT_FILE     = "corpus.json"
-DELAY_SECONDS   = 1.5       # polite delay between API calls
+DELAY_SECONDS   = 4       # polite delay between API calls (arXiv: ~1 req / 3s)
 
 # arXiv categories to restrict to (cs.CL = Computation & Language)
 CATEGORIES = ["cs.CL", "cs.AI", "cs.LG"]
 
 # ── arXiv API ─────────────────────────────────────────────────────────────────
 
-ARXIV_API = "http://export.arxiv.org/api/query"
+ARXIV_API = "https://export.arxiv.org/api/query"
+# Descriptive User-Agent is required by arXiv; reduces blocks and odd latency.
+USER_AGENT = "LexiAI-corpus-builder/1.0 (+https://arxiv.org/help/api/user-manual)"
+REQUEST_TIMEOUT = 90      # seconds (slow networks / busy export server)
+FETCH_RETRIES = 4
 NS = {"atom": "http://www.w3.org/2005/Atom",
       "arxiv": "http://arxiv.org/schemas/atom"}
+
+
+def _fetch_retriable(exc: BaseException) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in (429, 502, 503)
+    if isinstance(exc, (socket.timeout, TimeoutError, BrokenPipeError, ConnectionResetError)):
+        return True
+    if isinstance(exc, urllib.error.URLError):
+        msg = str(exc).lower()
+        if "timed out" in msg or "temporarily unavailable" in msg:
+            return True
+        reason = getattr(exc, "reason", None)
+        if reason is not None and "timed out" in str(reason).lower():
+            return True
+    return False
 
 
 def fetch_papers(query: str, max_results: int = 15) -> list[dict]:
@@ -88,17 +108,43 @@ def fetch_papers(query: str, max_results: int = 15) -> list[dict]:
         "sortOrder": "descending",
     })
     url = f"{ARXIV_API}?{params}"
-    try:
-        with urllib.request.urlopen(url, timeout=15) as resp:
-            xml_data = resp.read(MAX_RESPONSE_SIZE).decode("utf-8")
+    xml_data = None
+    for attempt in range(FETCH_RETRIES):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                xml_data = resp.read(MAX_RESPONSE_SIZE).decode("utf-8")
             if len(xml_data) == MAX_RESPONSE_SIZE:
                 logger.warning(f"Response truncated at limit for: {query}")
-    except (socket.timeout, urllib.error.URLError) as e:
-        logger.error(f"Network error fetching '{query}': {e}")
-        return []
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        return []
+            # arXiv sometimes returns HTTP 200 with plain text "Rate exceeded."
+            if "rate exceeded" in xml_data.strip().lower():
+                if attempt >= FETCH_RETRIES - 1:
+                    logger.error(
+                        f"arXiv rate limit for '{query}' — wait 15–60+ minutes, "
+                        "avoid refreshing the API in a browser, try another network if possible."
+                    )
+                    return []
+                wait = 90 + 45 * attempt
+                logger.warning(
+                    f"arXiv returned rate limit for '{query}', waiting {wait}s before retry "
+                    f"({attempt + 2}/{FETCH_RETRIES})"
+                )
+                time.sleep(wait)
+                continue
+            break
+        except Exception as e:
+            if not _fetch_retriable(e) or attempt >= FETCH_RETRIES - 1:
+                logger.error(f"Network error fetching '{query}': {e}")
+                return []
+            base = 12 + 18 * attempt
+            if isinstance(e, urllib.error.HTTPError) and e.code == 429:
+                wait = max(base, 45)
+            else:
+                wait = base
+            logger.warning(
+                f"Fetch failed for '{query}' ({e!s}), retry {attempt + 2}/{FETCH_RETRIES} in {wait}s"
+            )
+            time.sleep(wait)
 
     try:
         root = ET.fromstring(xml_data)
