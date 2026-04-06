@@ -17,7 +17,7 @@ That's it. No pip install needed.
 
 ```
 ├── gui_app.py        ← Main GUI application (run this)
-├── build_corpus.py   ← Corpus fetcher from arXiv
+├── build_corpus.py   ← Builds corpus.json from ../IMDB Dataset.csv (no network)
 ├── corpus.py         ← Corpus builder & preprocessor
 ├── corrector.py      ← NLP engine: MED + Bigram LM
 └── README.md         ← This file
@@ -50,6 +50,18 @@ venv/Scripts/Activate
 
 ### Build the corpus
 
+Place **IMDB Dataset.csv** at the **repository root** (same folder as `README.md` / `requirements.txt`).  
+Optional: [Kaggle IMDB dataset](https://www.kaggle.com/datasets/lakshmi25npathi/imdb-dataset-of-50k-movie-reviews).  
+Override path: set environment variable `CORPUS_CSV_PATH` to your CSV file.
+
+By default the builder uses **the whole CSV** (all ~50k reviews) so vocabulary and bigrams are as rich as possible. `corpus.json` can be **tens of MB** and the GUI may take longer to start the first time.
+
+For a **smaller quick build**, set caps before running (PowerShell example):
+
+```
+$env:CORPUS_MAX_REVIEWS="800"; $env:CORPUS_MAX_WORDS="120000"; python .\build_corpus.py
+```
+
 ```
 cd part_a_section1_spelling_corrector
 ```
@@ -57,6 +69,8 @@ cd part_a_section1_spelling_corrector
 ```
 python .\build_corpus.py
 ```
+
+This reads reviews locally and writes `corpus.json` next to `build_corpus.py` (no arXiv / no API).
 
 ### Run the code (Windows)
 Double-click `gui_app.py`, or open a terminal and run:
@@ -116,28 +130,20 @@ python3 gui_app.py
 
 ---
 
-## Fetching Real arXiv Data
+## Building the corpus from IMDB reviews
 
-Run the corpus builder **once** before launching the app:
+Run the corpus builder **once** before launching the app (no internet):
 
 ```
 python build_corpus.py
 ```
 
 This will:
-1. Query the arXiv API across 20 NLP/AI search topics
-2. Download ~200 paper abstracts (cs.CL, cs.AI, cs.LG)
-3. Clean, tokenize, and save everything to `corpus.json`
+1. Read `../IMDB Dataset.csv` (Kaggle-style columns: `review`, `sentiment`)
+2. Strip HTML tags, clean, and tokenize review text
+3. Save `corpus.json` (stops at `TARGET_WORDS` or `MAX_TOTAL_PAPERS` in `build_corpus.py`)
 4. The app loads `corpus.json` automatically on next launch
 
-**What gets fetched (~2–3 minutes):**
-- Large language models, transformers, BERT, GPT
-- Tokenization, embeddings, attention mechanisms
-- RAG, fine-tuning, RLHF, prompt engineering
-- NER, parsing, machine translation, summarization
-- And 15 more NLP topic areas
+**Result:** 100k+ tokens of movie-review English instead of the built-in seed text.
 
-**Result:** 100,000+ tokens from real research papers instead of the built-in seed text.
-
-> Requires internet connection. Uses only Python standard library (urllib).
-> Respects arXiv's API rate limit with 1.5s delay between requests.
+> Uses only the Python standard library (`csv`). Optional: `CORPUS_CSV_PATH` to point at another CSV with a `review` column.

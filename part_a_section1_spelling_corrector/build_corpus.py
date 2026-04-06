@@ -1,13 +1,18 @@
 """
-build_corpus.py — arXiv Corpus Builder for LexiAI
-===================================================
-Fetches real NLP/AI research paper abstracts from the arXiv API,
-cleans and tokenizes them, then saves a corpus.json file that
-corpus.py and gui_app.py will automatically load instead of the
-embedded seed text.
+build_corpus.py — IMDB review corpus builder for LexiAI
+=========================================================
+Reads movie-review text from the local IMDB Dataset.csv (Kaggle-style),
+cleans and tokenizes it, then saves corpus.json for corpus.py and gui_app.py.
+
+No network required.
 
 Run once:
     python build_corpus.py
+
+Optional env:
+  CORPUS_CSV_PATH       - path to CSV (default: ../IMDB Dataset.csv)
+  CORPUS_MAX_REVIEWS    - cap number of reviews kept (default: none = whole file)
+  CORPUS_MAX_WORDS      - cap total tokens (default: none = whole file)
 
 Then run the app as normal:
     python gui_app.py
@@ -15,172 +20,61 @@ Then run the app as normal:
 Requirements: Python 3.8+ (uses only standard library)
 """
 
-import urllib.request
-import urllib.parse
-import urllib.error
-import xml.etree.ElementTree as ET
+import csv
 import json
 import re
 import os
-import time
-import socket
-import logging
 from collections import Counter
 
-# ── Logging & Resource Limits
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.WARNING)
+# ── Resource Limits
 MAX_TEXT_LENGTH = 100000
-MAX_RESPONSE_SIZE = 1048576
+MAX_ABSTRACT_STORE = MAX_TEXT_LENGTH  # validation upper bound (IMDB reviews can be long)
 _LATEX_REGEX = re.compile(r'\\[a-z]+\{[^}]*?\}', re.DOTALL)
 _MATH_REGEX = re.compile(r'\$[^$]*?\$', re.DOTALL)
 _URL_REGEX = re.compile(r'https?://\S+')
 _SPECIAL_REGEX = re.compile(r'[^a-z\s\'-]')
+_HTML_TAG_REGEX = re.compile(r"<[^>]+>")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
-# arXiv API search queries — covers NLP, LLMs, transformers, etc.
-SEARCH_QUERIES = [
-    "large language models transformer NLP",
-    "tokenization subword embedding neural",
-    "attention mechanism self-attention BERT GPT",
-    "semantic retrieval dense vector embedding",
-    "fine-tuning pre-training language model",
-    "named entity recognition dependency parsing",
-    "machine translation sequence to sequence",
-    "reinforcement learning human feedback alignment",
-    "prompt engineering in-context learning",
-    "hallucination grounding factual accuracy",
-    "knowledge graph relation extraction",
-    "text classification sentiment analysis",
-    "summarization abstractive extractive",
-    "speech recognition natural language generation",
-    "federated learning differential privacy NLP",
-    "explainability interpretability attention visualization",
-    "low rank adaptation quantization distillation",
-    "retrieval augmented generation RAG",
-    "chain of thought reasoning commonsense",
-    "multilingual cross-lingual zero-shot transfer",
-]
-
-PAPERS_PER_QUERY = 15       # papers fetched per query
-MAX_TOTAL_PAPERS = 800      # hard cap
-TARGET_WORDS    = 120_000   # stop early if we exceed this
 OUTPUT_FILE     = "corpus.json"
-DELAY_SECONDS   = 4       # polite delay between API calls (arXiv: ~1 req / 3s)
+MIN_REVIEW_CHARS = 100     # skip very short reviews (after HTML strip)
+PROGRESS_EVERY   = 2000    # print progress every N CSV rows scanned
 
-# arXiv categories to restrict to (cs.CL = Computation & Language)
-CATEGORIES = ["cs.CL", "cs.AI", "cs.LG"]
-
-# ── arXiv API ─────────────────────────────────────────────────────────────────
-
-ARXIV_API = "https://export.arxiv.org/api/query"
-# Descriptive User-Agent is required by arXiv; reduces blocks and odd latency.
-USER_AGENT = "LexiAI-corpus-builder/1.0 (+https://arxiv.org/help/api/user-manual)"
-REQUEST_TIMEOUT = 90      # seconds (slow networks / busy export server)
-FETCH_RETRIES = 4
-NS = {"atom": "http://www.w3.org/2005/Atom",
-      "arxiv": "http://arxiv.org/schemas/atom"}
+# Default CSV: repo root IMDB Dataset.csv (Kaggle "IMDB Dataset")
 
 
-def _fetch_retriable(exc: BaseException) -> bool:
-    if isinstance(exc, urllib.error.HTTPError):
-        return exc.code in (429, 502, 503)
-    if isinstance(exc, (socket.timeout, TimeoutError, BrokenPipeError, ConnectionResetError)):
-        return True
-    if isinstance(exc, urllib.error.URLError):
-        msg = str(exc).lower()
-        if "timed out" in msg or "temporarily unavailable" in msg:
-            return True
-        reason = getattr(exc, "reason", None)
-        if reason is not None and "timed out" in str(reason).lower():
-            return True
-    return False
+def _corpus_limits():
+    """(max_reviews, max_words); None means no cap (use entire CSV)."""
+    r = os.environ.get("CORPUS_MAX_REVIEWS", "").strip()
+    w = os.environ.get("CORPUS_MAX_WORDS", "").strip()
+    max_r = int(r) if r else None
+    max_w = int(w) if w else None
+    return max_r, max_w
 
 
-def fetch_papers(query: str, max_results: int = 15) -> list[dict]:
-    """Fetch paper metadata from arXiv API for a given query."""
-    params = urllib.parse.urlencode({
-        "search_query": f"all:{query}",
-        "start": 0,
-        "max_results": max_results,
-        "sortBy": "relevance",
-        "sortOrder": "descending",
-    })
-    url = f"{ARXIV_API}?{params}"
-    xml_data = None
-    for attempt in range(FETCH_RETRIES):
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-                xml_data = resp.read(MAX_RESPONSE_SIZE).decode("utf-8")
-            if len(xml_data) == MAX_RESPONSE_SIZE:
-                logger.warning(f"Response truncated at limit for: {query}")
-            # arXiv sometimes returns HTTP 200 with plain text "Rate exceeded."
-            if "rate exceeded" in xml_data.strip().lower():
-                if attempt >= FETCH_RETRIES - 1:
-                    logger.error(
-                        f"arXiv rate limit for '{query}' — wait 15–60+ minutes, "
-                        "avoid refreshing the API in a browser, try another network if possible."
-                    )
-                    return []
-                wait = 90 + 45 * attempt
-                logger.warning(
-                    f"arXiv returned rate limit for '{query}', waiting {wait}s before retry "
-                    f"({attempt + 2}/{FETCH_RETRIES})"
-                )
-                time.sleep(wait)
-                continue
-            break
-        except Exception as e:
-            if not _fetch_retriable(e) or attempt >= FETCH_RETRIES - 1:
-                logger.error(f"Network error fetching '{query}': {e}")
-                return []
-            base = 12 + 18 * attempt
-            if isinstance(e, urllib.error.HTTPError) and e.code == 429:
-                wait = max(base, 45)
-            else:
-                wait = base
-            logger.warning(
-                f"Fetch failed for '{query}' ({e!s}), retry {attempt + 2}/{FETCH_RETRIES} in {wait}s"
-            )
-            time.sleep(wait)
+def default_csv_path() -> str:
+    env = os.environ.get("CORPUS_CSV_PATH", "").strip()
+    if env:
+        return os.path.normpath(env)
+    return os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "IMDB Dataset.csv")
+    )
 
-    try:
-        root = ET.fromstring(xml_data)
-    except ET.ParseError as e:
-        print(f"    ⚠ XML parse error: {e}")
-        return []
 
-    papers = []
-    for entry in root.findall("atom:entry", NS):
-        title_el   = entry.find("atom:title", NS)
-        summary_el = entry.find("atom:summary", NS)
-        id_el      = entry.find("atom:id", NS)
-
-        if title_el is None or summary_el is None:
-            continue
-
-        title   = (title_el.text or "").strip().replace("\n", " ")
-        summary = (summary_el.text or "").strip().replace("\n", " ")
-        arxiv_id = (id_el.text or "").strip() if id_el is not None else ""
-
-        if len(summary) < 100:
-            continue  # skip very short abstracts
-
-        papers.append({
-            "id":      arxiv_id,
-            "title":   title,
-            "abstract": summary,
-        })
-
-    return papers
+def strip_html(text: str) -> str:
+    """Remove HTML tags (e.g. <br />) from review text."""
+    if not text:
+        return ""
+    text = _HTML_TAG_REGEX.sub(" ", text)
+    return " ".join(text.split())
 
 
 # ── Text Cleaning ──────────────────────────────────────────────────────────────
 
+
 def clean_text(text: str) -> str:
-    """Normalise and clean raw abstract text with bounded operations."""
+    """Normalise and clean raw text with bounded operations."""
     if len(text) > MAX_TEXT_LENGTH:
         text = text[:MAX_TEXT_LENGTH]
     text = text.lower()
@@ -204,36 +98,68 @@ def tokenize(text: str) -> list[str]:
 
 # ── Build & Save ───────────────────────────────────────────────────────────────
 
-def build_corpus():
-    print("=" * 60)
-    print("  LexiAI — arXiv Corpus Builder")
-    print("=" * 60)
 
-    seen_ids   = set()
+def build_corpus():
+    csv_path = default_csv_path()
+    if not os.path.isfile(csv_path):
+        raise FileNotFoundError(
+            f"IMDB CSV not found: {csv_path}\n"
+            "Place IMDB Dataset.csv at the repository root, or set CORPUS_CSV_PATH.\n"
+            "Download: https://www.kaggle.com/datasets/lakshmi25npathi/imdb-dataset-of-50k-movie-reviews"
+        )
+
+    print("=" * 60)
+    print("  LexiAI - IMDB review corpus builder")
+    print("=" * 60)
+    print(f"  Source: {csv_path}")
+    max_reviews, max_words = _corpus_limits()
+    if max_reviews is not None or max_words is not None:
+        print(
+            f"  Caps: max_reviews={max_reviews}, max_words={max_words} "
+            "(unset env vars for full dataset)\n"
+        )
+    else:
+        print(
+            "  Full dataset: all CSV rows (no caps). corpus.json will be large; "
+            "first GUI load may take longer.\n"
+        )
+
     all_papers = []
     all_tokens = []
     total_words = 0
+    rows_scanned = 0
 
-    for qi, query in enumerate(SEARCH_QUERIES):
-        if len(all_papers) >= MAX_TOTAL_PAPERS:
-            print(f"\n✓ Reached {MAX_TOTAL_PAPERS} papers — stopping early.")
-            break
-        if total_words >= TARGET_WORDS:
-            print(f"\n✓ Reached {total_words:,} words — stopping early.")
-            break
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames or "review" not in reader.fieldnames:
+            raise ValueError(
+                f"CSV must have a 'review' column; got fields: {reader.fieldnames!r}"
+            )
 
-        print(f"\n[{qi+1}/{len(SEARCH_QUERIES)}] Query: \"{query}\"")
-        papers = fetch_papers(query, max_results=PAPERS_PER_QUERY)
-        new_count = 0
+        for row in reader:
+            if max_reviews is not None and len(all_papers) >= max_reviews:
+                print(f"\nOK Reached review cap ({max_reviews}) - stopping early.")
+                break
+            if max_words is not None and total_words >= max_words:
+                print(f"\nOK Reached word cap ({max_words:,}) - stopping early.")
+                break
 
-        for paper in papers:
-            if paper["id"] in seen_ids:
+            rows_scanned += 1
+            raw = (row.get("review") or "").strip()
+            text = strip_html(raw)
+            if len(text) < MIN_REVIEW_CHARS:
                 continue
-            seen_ids.add(paper["id"])
 
-            text = paper["title"] + " " + paper["abstract"]
-            cleaned = clean_text(text)
-            tokens  = tokenize(cleaned)
+            doc_id = f"imdb-{rows_scanned}"
+
+            paper = {
+                "id": doc_id,
+                "title": "review",
+                "abstract": text[:MAX_ABSTRACT_STORE],
+            }
+            combined = paper["title"] + " " + paper["abstract"]
+            cleaned = clean_text(combined)
+            tokens = tokenize(cleaned)
 
             if len(tokens) < 20:
                 continue
@@ -241,60 +167,64 @@ def build_corpus():
             all_papers.append(paper)
             all_tokens.extend(tokens)
             total_words += len(tokens)
-            new_count += 1
 
-        print(f"    → {new_count} new papers | total: {len(all_papers)} papers, {total_words:,} words")
-
-        if qi < len(SEARCH_QUERIES) - 1:
-            time.sleep(DELAY_SECONDS)
+            if rows_scanned % PROGRESS_EVERY == 0:
+                print(
+                    f"  ... {rows_scanned:,} rows scanned | "
+                    f"{len(all_papers)} reviews kept | {total_words:,} words"
+                )
 
     # ── Compute statistics ──
-    print(f"\n{'─'*60}")
-    print(f"  Building frequency tables…")
+    print(f"\n{'-'*60}")
+    print("  Building frequency tables...")
 
     word_freq = Counter(all_tokens)
     vocabulary = set(word_freq.keys())
 
     bigrams: Counter = Counter()
     for i in range(len(all_tokens) - 1):
-        bigrams[(all_tokens[i], all_tokens[i+1])] += 1
+        bigrams[(all_tokens[i], all_tokens[i + 1])] += 1
 
-    # Top 30 most frequent words
     top30 = word_freq.most_common(30)
 
     print(f"  Total tokens   : {len(all_tokens):,}")
     print(f"  Unique words   : {len(vocabulary):,}")
     print(f"  Unique bigrams : {len(bigrams):,}")
-    print(f"  Papers fetched : {len(all_papers)}")
-    print(f"\n  Top 20 words   : {[w for w,_ in top30[:20]]}")
+    print(f"  Reviews kept   : {len(all_papers)}")
+    print(f"  CSV rows scanned: {rows_scanned:,}")
+    print(f"\n  Top 20 words   : {[w for w, _ in top30[:20]]}")
 
     # ── Serialise ──
-    # Validate papers before writing
     def validate_paper(p: dict) -> bool:
-        return (isinstance(p.get("id"), str) and
-                isinstance(p.get("abstract"), str) and
-                isinstance(p.get("title"), str) and
-                0 < len(p.get("abstract", "")) <= 5000)
-    
+        abstract = p.get("abstract", "")
+        return (
+            isinstance(p.get("id"), str)
+            and isinstance(abstract, str)
+            and isinstance(p.get("title"), str)
+            and 0 < len(abstract) <= MAX_ABSTRACT_STORE
+        )
+
     valid_papers = [p for p in all_papers if validate_paper(p)]
     if not valid_papers:
-        raise ValueError(f"All {len(all_papers)} papers invalid")
-    
-    # Convert Counter keys (tuples) to strings for JSON
+        raise ValueError(f"All {len(all_papers)} documents invalid (check CSV content)")
+
     bigram_dict = {f"{w1}|{w2}": count for (w1, w2), count in bigrams.items()}
 
     payload = {
         "meta": {
-            "total_tokens":  len(all_tokens),
-            "unique_words":  len(vocabulary),
+            "total_tokens": len(all_tokens),
+            "unique_words": len(vocabulary),
             "total_bigrams": len(bigram_dict),
-            "total_papers":  len(valid_papers),
-            "queries_used":  SEARCH_QUERIES,
+            "total_papers": len(valid_papers),
+            "source": "IMDB Dataset.csv",
+            "csv_path": os.path.basename(csv_path),
+            "rows_scanned": rows_scanned,
+            "reviews_kept": len(valid_papers),
         },
-        "word_freq":  dict(word_freq),
-        "bigrams":    bigram_dict,
+        "word_freq": dict(word_freq),
+        "bigrams": bigram_dict,
         "vocabulary": list(vocabulary),
-        "tokens":     all_tokens,
+        "tokens": all_tokens,
         "papers": [
             {"id": p["id"], "title": p["title"], "abstract": p["abstract"][:300]}
             for p in valid_papers
@@ -302,13 +232,13 @@ def build_corpus():
     }
 
     out_path = os.path.join(os.path.dirname(__file__), OUTPUT_FILE)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
+    with open(out_path, "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, ensure_ascii=False)
 
     size_kb = os.path.getsize(out_path) / 1024
     print(f"\n{'='*60}")
-    print(f"  ✓ Saved → {out_path}  ({size_kb:.0f} KB)")
-    print(f"  Run  →  python gui_app.py  to launch the app")
+    print(f"  Saved -> {out_path}  ({size_kb:.0f} KB)")
+    print("  Run: python gui_app.py  to launch the app")
     print(f"{'='*60}\n")
 
 

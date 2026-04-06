@@ -489,11 +489,14 @@ class CorpusBuilder:
         import os
         json_path = os.path.join(os.path.dirname(__file__), "corpus.json")
         if self.load_from_json(json_path):
-            print(f"✓ Loaded arXiv corpus from {json_path}")
-            print(f"  {self.word_count:,} tokens · {len(self.vocabulary):,} unique words · {len(self.bigrams):,} bigrams")
+            print(f"Loaded corpus from {json_path}")
+            print(
+                f"  {self.word_count:,} tokens | {len(self.vocabulary):,} unique words | "
+                f"{len(self.bigrams):,} bigrams"
+            )
         else:
-            print("ℹ  corpus.json not found — using embedded seed corpus.")
-            print("   Run  python build_corpus.py  to fetch real arXiv data.")
+            print("corpus.json not found - using embedded seed corpus.")
+            print("   Run  python build_corpus.py  to build from IMDB Dataset.csv (repo root).")
             self.load_seed_corpus()
             self.preprocess()
             self.build_frequency_table()
