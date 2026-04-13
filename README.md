@@ -1,4 +1,4 @@
-# LexiAI — Domain-Specific Spelling Corrector
+# LexiAI — Domain-Specific Spelling Corrector 
 
 An intelligent, context-aware spelling correction tool designed for domain-specific text processing. This project was developed as part of an advanced Natural Language Processing (NLP) module to handle specialized vocabularies and contextual error correction.
 
