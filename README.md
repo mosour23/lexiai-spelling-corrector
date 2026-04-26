@@ -1,9 +1,9 @@
-# LexiAI — Domain-Specific Spelling Corrector 
+# LexiAI — Movie Domain-Specific Spelling Corrector 
 
-An intelligent, context-aware spelling correction tool designed for domain-specific text processing. This project was developed as part of an advanced Natural Language Processing (NLP) module to handle specialized vocabularies and contextual error correction.
+An intelligent, context-aware spelling correction tool designed for movie domain-specific text processing. This project was developed as part of an advanced Natural Language Processing (NLP) module to handle specialized vocabularies and contextual error correction.
 
 ## 🚀 Features
-* **Domain-Specific Vocabulary:** Tuned to recognize and correct terms specific to the target dataset rather than relying solely on generic dictionaries.
+* **Movie Domain-Specific Vocabulary:** Tuned to recognize and correct terms specific to the target dataset rather than relying solely on generic dictionaries.
 * **Context-Aware Correction:** Evaluates surrounding words to make higher-probability correction choices.
 * **Efficient Processing:** Built with Python, optimized for analyzing large text corpora.
 

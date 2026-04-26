@@ -69,7 +69,7 @@ class LexiAIApp(tk.Tk):
                  bg=BG, fg=TEXT).pack(side="left")
         tk.Label(hdr, text="AI", font=("Helvetica", 22, "bold"),
                  bg=BG, fg=ACCENT).pack(side="left")
-        tk.Label(hdr, text="  Domain-Specific Spelling Corrector · NLP Research Tool",
+        tk.Label(hdr, text="  Movie Domain-Specific Spelling Corrector · NLP Research Tool",
                  font=("Helvetica", 10), bg=BG, fg=MUTED).pack(side="left", pady=(8, 0))
 
         self.status_lbl = tk.Label(hdr, text="⏳ Loading corpus…",
@@ -439,7 +439,7 @@ class LexiAIApp(tk.Tk):
 
         about_box.configure(state="normal")
         content = [
-            ("h1", "Domain-Specific Probabilistic Spelling Correction\n\n"),
+            ("h1", "Movie Domain-Specific Probabilistic Spelling Correction\n\n"),
             ("h2", "Objective 1 — Corpus Formulation\n"),
             ("body", ("A custom AI/NLP corpus is built from seed text covering transformers, tokenization, "
                       "embeddings, retrieval-augmented generation, RLHF, and more — enriched with 200+ "

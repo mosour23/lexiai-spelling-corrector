@@ -1,6 +1,6 @@
 # LexiAI NLP Assignment — Comprehensive Project Report
 **Generated:** March 29, 2026  
-**Project:** Domain-Specific Probabilistic Spelling Corrector + Sentiment Analysis  
+**Project:** Movie Domain-Specific Probabilistic Spelling Corrector + Sentiment Analysis  
 **Status:** Completed with 10 Critical Bug Fixes Implemented
 
 ---
@@ -8,7 +8,7 @@
 ## Executive Summary
 
 The LexiAI NLP Assignment project consists of two major components:
-1. **Spelling Corrector** — Tkinter-based GUI for domain-specific spelling correction using Damerau-Levenshtein MED + Bigram Language Model
+1. **Spelling Corrector** — Tkinter-based GUI for movie domain-specific spelling correction using Damerau-Levenshtein MED + Bigram Language Model
 2. **Sentiment Analysis** — Jupyter notebook for IMDB movie review classification
 
 This report summarizes a comprehensive four-phase initiative that:

@@ -1,6 +1,6 @@
 # LexiAI NLP Assignment — Workspace Instructions
 
-This document provides essential guidance for working with the **LexiAI NLP Assignment** project, which consists of two major components: a domain-specific spelling corrector and sentiment analysis classification.
+This document provides essential guidance for working with the **LexiAI NLP Assignment** project, which consists of two major components: a movie domain-specific spelling corrector and sentiment analysis classification.
 
 ## 🏗️ Project Architecture
 
@@ -128,7 +128,7 @@ jupyter notebook sentiment_classification.ipynb
 3. **Bigram Language Model:**
    - Laplace smoothing to handle unseen bigrams
    - Detects real-word errors by finding contextually unlikely word pairs
-   - Domain-specific corpus improves accuracy for NLP/AI text
+   - Movie Domain-specific corpus improves accuracy for NLP/AI text
 
 ### Common Development Environment Issues
 

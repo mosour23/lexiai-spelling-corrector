@@ -1,6 +1,6 @@
 """
 corpus.py - Corpus Builder & Preprocessor
-Builds a domain-specific AI/NLP corpus from embedded seed text + generates 
+Builds a movie domain-specific AI/NLP corpus from embedded seed text + generates 
 a rich vocabulary of AI terminology.
 """
 
@@ -361,7 +361,7 @@ COMMON_WORDS = [
 
 
 class CorpusBuilder:
-    """Builds and manages the domain-specific AI/NLP corpus."""
+    """Builds and manages the movie domain-specific AI/NLP corpus."""
 
     def __init__(self):
         self.raw_text = ""

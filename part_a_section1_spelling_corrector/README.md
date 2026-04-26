@@ -1,4 +1,4 @@
-# LexiAI — Domain-Specific Spelling Corrector
+# LexiAI — Movie Domain-Specific Spelling Corrector
 ### NLP Research Tool | Python 3.8+ | No external dependencies
 
 ---
